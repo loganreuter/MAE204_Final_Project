@@ -4,6 +4,7 @@ import modern_robotics as mr
 import matplotlib.pyplot as plt
 
 import csv
+import math
 
 R = 0.0475 # meters
 W = 0.15 # meters
@@ -168,7 +169,22 @@ def FeedbackControl(joint_angles, X_d, X_d_next, K_p, K_i, delt, joint_constrain
     V = ad @ Vd + K_p @ Xerr + K_i @ error
     
     output = np.linalg.pinv(J, rcond=PINV_THRESHOLD) @ V
-    return (output, Xerr)
+
+    Aw = J[:3, :] @ J[:3, :].T
+    Av = J[3:, :] @ J[3:, :].T
+
+    eig_w = np.linalg.eigvals(Aw)
+    eig_v = np.linalg.eigvals(Av)
+
+    manip_w = -1
+    manip_v = -1
+    if abs(min(eig_w)) > PINV_THRESHOLD:
+        manip_w = math.sqrt( max(eig_w) / min(eig_w) )
+    
+    if abs(min(eig_v)) > PINV_THRESHOLD:
+        manip_v = math.sqrt( max(eig_v) / min(eig_v) )
+
+    return (output, Xerr, manip_w, manip_v)
 
 def test_state(curr_state: np.ndarray) -> list[bool]:
     joint_constraints = [False for _ in range(9)]
@@ -176,13 +192,16 @@ def test_state(curr_state: np.ndarray) -> list[bool]:
     arm_joints = curr_state[3:8]
     arm_constr_offst = 4
 
+    # if arm_joints[0] < -1e-2 or arm_joints[0] > 1e-2:
+    #     joint_constraints[4] = True
 
-    if arm_joints[0] < -1e-2 or arm_joints[0] > 1e-2:
+    if arm_joints[1] > np.pi/2 or arm_joints[1] < -1.1:
+        joint_constraints[5] = True
+
+    if arm_joints[2] > -0.1:
         joint_constraints[4] = True
 
-    if arm_joints[2] > -0.5:
-        joint_constraints[6] = True
-    if arm_joints[3] > -0.5:
+    if arm_joints[3] > -0.1:
         joint_constraints[7] = True
 
     return joint_constraints
@@ -199,32 +218,36 @@ def FullProgram() -> None:
 
     steps = []
     err_v_time = []
+    linear_manip = []
+    angular_manip = []
 
     # T_se_i = np.array([[0.170, 0, 0.985, 0.387], [0, 1, 0, 0], [-0.985, 0, 0.170, 0.570], [0, 0, 0, 1]])
+    
+    # Original Task Config
     T_se_i = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0.5], [0, 0, 0, 1]])
     T_sc_i = np.array([[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0.25], [0, 0, 0, 1]])
     T_sc_f = np.array([[0, 1, 0, 0], [-1, 0, 0, -1], [0, 0, 1, .25], [0, 0, 0, 1]])
     T_ce_grasp = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.25], [0, 0, 0, 1]])
     T_ce_standoff = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.15], [0, 0, 0, 1]])
 
-    # K_p = np.zeros((6,6))
-    # K_p = np.eye(6) * 0.155
+    # New Task Config
+    # T_se_i = np.array([[-1, 0, 0.002, 0.335], [0, 1, 0, 0], [-0.002, 0, -1, 0.183], [0, 0, 0, 1]])
+    # T_sc_i = np.array([[1, 0, 0, 1.5], [0, 1, 0, 0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+    # T_sc_f = np.array([[1, 0, 0, 1.5], [0, 1, 0, -0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+    # T_ce_grasp = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.25], [0, 0, 0, 1]])
+    # T_ce_standoff = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.15], [0, 0, 0, 1]])
 
-    # K_p:
-    # K1: minimal effect
-    # K2: 
-    #   bigger: faster convergences to 0, more overshoot
-    #   smaller: slower convergence, less overshoot
-    # K3: minimal effect? (did not check small)
-    # K4: 
-    #   bigger: 
-    #   smaller: 
-    # K5:
-    # K6:
-
+    # Best:
     K_p = np.eye(6) * [1, 0.15, 1, 0.7, 1, 0.25]
     K_i = np.zeros((6,6))
-    # K_i = np.eye(6) * 5
+
+    # Overshoot:
+    # K_p = np.eye(6) * [1, 0.15, 1, 5, 1, 0.25]
+    # K_i = np.eye(6) * [20, 20, 20, 20, 20, 20]
+
+    # New Task:
+    # K_p = np.eye(6) * [1, 0.5, 1, 0.7, 1, 0.75]
+    # K_i = np.zeros((6,6))
 
     k = 1 # number of steps per 0.001 seconds
     Tf = 2 # trajectory runtime (s)
@@ -232,7 +255,7 @@ def FullProgram() -> None:
     max_speed = 5 # m/s
 
     trajectory = TrajectoryGenerator(T_se_i, T_sc_i, T_sc_f, T_ce_grasp, T_ce_standoff, k, Tf, write_debug=True)
-    curr_state = np.array([0, 0, 0, 0, 0, -np.pi/2, -np.pi/2, 0, 0, 0, 0, 0, 0])
+    curr_state = np.array([0, 0, 0, 0, 0, -np.pi/4, -np.pi/4, 0, 0, 0, 0, 0, 0])
 
     for idx, traj in enumerate(trajectory):
         step, gripper_state = traj
@@ -244,14 +267,14 @@ def FullProgram() -> None:
 
         joint_constraints = [False for _ in range(9)]
 
-        velocities, err = FeedbackControl(np.array(curr_state[:8]), T_se_d, T_se_d_next, K_p, K_i, dt, joint_constraints)
+        velocities, err, manip_w, manip_v = FeedbackControl(np.array(curr_state[:8]), T_se_d, T_se_d_next, K_p, K_i, dt, joint_constraints)
 
         next_state = NextState(curr_state, velocities.reshape(1, 9)[0], dt, max_speed)
 
         joint_constraints = test_state(next_state)
 
         if True in joint_constraints:
-            velocities, err = FeedbackControl(np.array(curr_state[:8]), T_se_d, T_se_d_next, K_p, K_i, dt, joint_constraints)
+            velocities, err, manip_w, manip_v = FeedbackControl(np.array(curr_state[:8]), T_se_d, T_se_d_next, K_p, K_i, dt, joint_constraints)
 
             next_state = NextState(curr_state, velocities.reshape(1, 9)[0], dt, max_speed)            
 
@@ -261,6 +284,8 @@ def FullProgram() -> None:
 
         steps.append(curr_state)
         err_v_time.append(err)
+        angular_manip.append(manip_w)
+        linear_manip.append(manip_v)
     
     with open("final.csv", "w+") as file:
         writer = csv.writer(file)
@@ -268,9 +293,15 @@ def FullProgram() -> None:
         writer.writerows(steps)
     
     err_v_time = np.array(err_v_time)
+    angular_manip = np.array(angular_manip)
+    angular_manip[np.where(angular_manip == -1)] = max(angular_manip)
+    linear_manip = np.array(linear_manip)
+    linear_manip[np.where(linear_manip == -1)] = max(linear_manip)
     t = np.linspace(0, err_v_time.shape[0], err_v_time.shape[0]) * dt
-    for idx in range(len(err_v_time[0])):
-        plt.plot(t, err_v_time[:, idx], label=f"{idx + 1}")
+    # for idx in range(len(err_v_time[0])):
+    #     plt.plot(t, err_v_time[:, idx], label=f"{idx + 1}")
+    plt.plot(t, angular_manip, label="u_1(Aw)")
+    plt.plot(t, linear_manip, label="u_1(Av)")
     plt.legend()
     plt.show()
     
