@@ -11,6 +11,7 @@ R = 0.0475 # meters
 W = 0.15 # meters
 L = 0.47/2 # meters
 PINV_THRESHOLD = 1e-3
+ConstrainJoints = False
 
 class Scenario(Enum):
     BEST = 1
@@ -133,7 +134,8 @@ def TrajectoryGenerator(T_se_i, T_sc_i, T_sc_f, T_ce_grasp, T_ce_standoff, k: in
 
 def FeedbackControl(joint_angles, X_d, X_d_next, K_p, K_i, delt, joint_constraints: list[bool]):
     # NOTE: @ in python is used for matrix multiplication
-    
+    global ConstrainJoints
+
     # initialize variables used for calculations
     l = L
     w = W
@@ -194,16 +196,15 @@ def FeedbackControl(joint_angles, X_d, X_d_next, K_p, K_i, delt, joint_constrain
     # as zero
     manip_w = -1
     manip_v = -1
-    if abs(min(eig_w)) > 1e-5:
+    if abs(min(eig_w)) > PINV_THRESHOLD:
         manip_w = math.sqrt( max(eig_w) / min(eig_w) )
-    else:
-        isSingularity = True
     
-    if abs(min(eig_v)) > 1e-5:
+    if abs(min(eig_v)) > PINV_THRESHOLD:
         manip_v = math.sqrt( max(eig_v) / min(eig_v) )
 
     # used to update jacobian for singularity and joint limits
-    J[:, joint_constraints] = 0
+    if ConstrainJoints:
+        J[:, joint_constraints] = 0
 
     # calculate the error
     Xerr = mr.se3ToVec(mr.MatrixLog6(mr.TransInv(X) @ X_d)).reshape((6,1))
@@ -248,6 +249,7 @@ def FullProgram() -> None:
         K_i: float Integral Gain
     """
     global PINV_THRESHOLD
+    global ConstrainJoints
 
     # initialize lists to store useful information
     steps = []
@@ -264,6 +266,9 @@ def FullProgram() -> None:
     match scenario:
         case Scenario.BEST | Scenario.OVERSHOOT_1 | Scenario.NEW_TASK:
             PINV_THRESHOLD = 1e-3
+            ConstrainJoints = True
+
+            # reference configuration frame
             T_se_i = np.array([[-1, 0, 0.002, 0.335], [0, 1, 0, 0], [-0.002, 0, -1, 0.183], [0, 0, 0, 1]])
 
             # Original Task Config
@@ -274,6 +279,9 @@ def FullProgram() -> None:
             curr_state = np.array([0, 0, 0, 0, 0, -np.pi/4, -np.pi/4, 0, 0, 0, 0, 0, 0])
         case Scenario.OVERSHOOT_2:
             PINV_THRESHOLD = 1e-2
+            ConstrainJoints = False
+
+            # reference configuration frame
             T_se_i = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0.5], [0, 0, 0, 1]])
             
             # New Task Config
