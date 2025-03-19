@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 import csv
 import math
-from enum import Enum
+from enum import IntEnum
 
 R = 0.0475 # meters
 W = 0.15 # meters
@@ -13,7 +13,7 @@ L = 0.47/2 # meters
 PINV_THRESHOLD = 1e-3
 ConstrainJoints = False
 
-class Scenario(Enum):
+class Scenario(IntEnum):
     BEST = 1
     OVERSHOOT_1 = 2
     OVERSHOOT_2 = 3
@@ -191,16 +191,10 @@ def FeedbackControl(joint_angles, X_d, X_d_next, K_p, K_i, delt, joint_constrain
     eig_v = np.linalg.eigvals(Av)
 
     # calculate the manipulability
-    # handling division by 0 errors by
-    # treating all numbers less than PINV_THRESHOLD
-    # as zero
-    manip_w = -1
-    manip_v = -1
-    if abs(min(eig_w)) > PINV_THRESHOLD:
-        manip_w = math.sqrt( max(eig_w) / min(eig_w) )
+    # handling division by 0 errors by introducing a small offset
+    manip_w = math.sqrt( max(eig_w) / (min(eig_w) + 1e-8) )
     
-    if abs(min(eig_v)) > PINV_THRESHOLD:
-        manip_v = math.sqrt( max(eig_v) / min(eig_v) )
+    manip_v = math.sqrt( max(eig_v) / (min(eig_v) + 1e-8) )
 
     # used to update jacobian for singularity and joint limits
     if ConstrainJoints:
@@ -239,7 +233,7 @@ def test_state(curr_state: np.ndarray) -> list[bool]:
 
     return joint_constraints
 
-def FullProgram() -> None:
+def FullProgram(scene: Scenario) -> None:
     """
         T_ci: SE(6) Initial Resting Configuration of the cube frame
         T_cd: SE(6) Desired Configuration of the cube frame
@@ -260,11 +254,14 @@ def FullProgram() -> None:
     T_ce_grasp = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.25], [0, 0, 0, 1]])
     T_ce_standoff = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.15], [0, 0, 0, 1]])
     
-    scenario = Scenario.BEST
+    scenario = scene
+    scenario_str = ""
 
-    # Set up configurations
+    # establish gains
     match scenario:
-        case Scenario.BEST | Scenario.OVERSHOOT_1 | Scenario.NEW_TASK:
+        case Scenario.BEST:
+            scenario_str = "best"
+
             PINV_THRESHOLD = 1e-3
             ConstrainJoints = True
 
@@ -277,38 +274,67 @@ def FullProgram() -> None:
 
             # starting position
             curr_state = np.array([0, 0, 0, 0, 0, -np.pi/4, -np.pi/4, 0, 0, 0, 0, 0, 0])
-        case Scenario.OVERSHOOT_2:
-            PINV_THRESHOLD = 1e-2
-            ConstrainJoints = False
 
-            # reference configuration frame
-            T_se_i = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0.5], [0, 0, 0, 1]])
-            
-            # New Task Config
-            T_sc_i = np.array([[1, 0, 0, 1.5], [0, 1, 0, 0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
-            T_sc_f = np.array([[1, 0, 0, 1.5], [0, 1, 0, -0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
-
-            # starting position
-            curr_state = np.array([0, 0, 0, 0, 0, -np.pi/2, -np.pi/2, 0, 0, 0, 0, 0, 0])
-
-    # establish gains
-    match scenario:
-        case Scenario.BEST:
             # Best:
             K_p = np.eye(6) * [1, 0.15, 1, 0.15, 1, 1]
             K_i = np.eye(6) * 50
         
         case Scenario.OVERSHOOT_1:
+            scenario_str = "overshoot (result 1)"
+
+            PINV_THRESHOLD = 1e-3
+            ConstrainJoints = True
+
+            # reference configuration frame
+            T_se_i = np.array([[-1, 0, 0.002, 0.335], [0, 1, 0, 0], [-0.002, 0, -1, 0.183], [0, 0, 0, 1]])
+
+            # Original Task Config
+            T_sc_i = np.array([[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+            T_sc_f = np.array([[0, 1, 0, 0], [-1, 0, 0, -1], [0, 0, 1, .25], [0, 0, 0, 1]])
+
+            # starting position
+            curr_state = np.array([0, 0, 0, 0, 0, -np.pi/4, -np.pi/4, 0, 0, 0, 0, 0, 0])
+
             # Overshoot (Result 1):
             K_p = np.eye(6) * [1, 0.15, 1, 0.85, 1, 1]
             K_i = np.eye(6) * 50
 
         case Scenario.OVERSHOOT_2:
+            scenario_str = "overshoot (result 2)"
+
+            PINV_THRESHOLD = 1e-2
+            ConstrainJoints = False
+
+            # reference configuration frame
+            T_se_i = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0.5], [0, 0, 0, 1]])
+
+            # Original Task Config
+            T_sc_i = np.array([[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+            T_sc_f = np.array([[0, 1, 0, 0], [-1, 0, 0, -1], [0, 0, 1, .25], [0, 0, 0, 1]])
+            
+            # starting position
+            curr_state = np.array([0, 0, 0, 0, 0, -np.pi/2, -np.pi/2, 0, 0, 0, 0, 0, 0])
+
             # Overshoot (Result 2):
             K_p = np.eye(6) * [1, 0.15, 1, 5, 1, 0.25]
             K_i = np.eye(6) * 50
         
         case Scenario.NEW_TASK:
+            scenario_str = "new task"
+
+            PINV_THRESHOLD = 1e-3
+            ConstrainJoints = True
+
+            # reference configuration frame
+            T_se_i = np.array([[-1, 0, 0.002, 0.335], [0, 1, 0, 0], [-0.002, 0, -1, 0.183], [0, 0, 0, 1]])
+
+            # New Task Config
+            T_sc_i = np.array([[1, 0, 0, 1.5], [0, 1, 0, 0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+            T_sc_f = np.array([[1, 0, 0, 1.5], [0, 1, 0, -0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+
+            # starting position
+            curr_state = np.array([0, 0, 0, 0, 0, -np.pi/4, -np.pi/4, 0, 0, 0, 0, 0, 0])
+
             # New Task:
             K_p = np.eye(6) * [1, 0.35, 1, 0.25, 1, 0.5]
             K_i = np.zeros((6,6))
@@ -319,9 +345,6 @@ def FullProgram() -> None:
     max_speed = 5 # m/s
 
     trajectory = TrajectoryGenerator(T_se_i, T_sc_i, T_sc_f, T_ce_grasp, T_ce_standoff, k, Tf, write_debug=True)
-
-    # list to store all determined singularities for debugging purposes
-    singularities = []
 
     # loop through each step in the trajector
     for idx, traj in enumerate(trajectory):
@@ -350,20 +373,12 @@ def FullProgram() -> None:
         err_v_time.append(err)
         angular_manip.append(manip_w)
         linear_manip.append(manip_v)
-
-        # append any singularities for debugging
-        if manip_w == -1:
-            singularities.append(curr_state)
     
     # write all configuration data to a csv file for simulation
-    with open("final.csv", "w+") as file:
+    with open(f"./output/{scenario_str}.csv", "w+") as file:
         writer = csv.writer(file)
 
         writer.writerows(steps)
-    
-    # print the first singularity point
-    if singularities:
-        print(singularities[0])
 
     # plot the error over time and the manipulability as a function of time
     err_v_time = np.array(err_v_time)
@@ -373,20 +388,21 @@ def FullProgram() -> None:
     plt.legend()
     plt.xlabel("Time (s)")
     plt.ylabel("Error")
-    plt.savefig(f"./tmp/overshoot.png")
+    plt.savefig(f"./output/error_{scenario_str}.png")
 
     plt.clf()
     
     angular_manip = np.array(angular_manip)
-    angular_manip[np.where(angular_manip == -1)] = max(angular_manip)
     linear_manip = np.array(linear_manip)
-    linear_manip[np.where(linear_manip == -1)] = max(linear_manip)
-    plt.plot(t, angular_manip, label="u_1(Aw)")
-    plt.plot(t, linear_manip, label="u_1(Av)")
-    plt.legend()
-    plt.xlabel("Time (s)")
-    plt.ylabel("Manipulability")
-    plt.show()
-    
+    _, axs = plt.subplots(2)
+    axs[0].plot(t, angular_manip, label="u_1(Aw)")
+    axs[0].legend()
+    axs[0].set(xlabel="Time (s)", ylabel="Manipulability")
+    axs[1].plot(t, linear_manip, label="u_1(Av)")
+    axs[1].legend()
+    axs[1].set(xlabel="Time (s)", ylabel="Manipulability")
+    plt.savefig(f"./output/manipulability_{scenario_str}.png")
+    plt.clf()
 # run the full program
-FullProgram()
+for i in range(1,5):
+    FullProgram(Scenario(i))
