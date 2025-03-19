@@ -5,11 +5,18 @@ import matplotlib.pyplot as plt
 
 import csv
 import math
+from enum import Enum
 
 R = 0.0475 # meters
 W = 0.15 # meters
 L = 0.47/2 # meters
-PINV_THRESHOLD = 1e-2
+PINV_THRESHOLD = 1e-3
+
+class Scenario(Enum):
+    BEST = 1
+    OVERSHOOT_1 = 2
+    OVERSHOOT_2 = 3
+    NEW_TASK = 4
 
 def NextState(curr_state: np.ndarray, velocities: np.ndarray, dt: float, max_vel: float) -> np.ndarray:
     # initialize next state to all zeros
@@ -187,14 +194,16 @@ def FeedbackControl(joint_angles, X_d, X_d_next, K_p, K_i, delt, joint_constrain
     # as zero
     manip_w = -1
     manip_v = -1
-    if abs(min(eig_w)) > PINV_THRESHOLD:
+    if abs(min(eig_w)) > 1e-5:
         manip_w = math.sqrt( max(eig_w) / min(eig_w) )
+    else:
+        isSingularity = True
     
-    if abs(min(eig_v)) > PINV_THRESHOLD:
+    if abs(min(eig_v)) > 1e-5:
         manip_v = math.sqrt( max(eig_v) / min(eig_v) )
 
     # used to update jacobian for singularity and joint limits
-    # J[:, joint_constraints] = 0
+    J[:, joint_constraints] = 0
 
     # calculate the error
     Xerr = mr.se3ToVec(mr.MatrixLog6(mr.TransInv(X) @ X_d)).reshape((6,1))
@@ -238,40 +247,63 @@ def FullProgram() -> None:
         K_p: float Proportional gain
         K_i: float Integral Gain
     """
+    global PINV_THRESHOLD
+
     # initialize lists to store useful information
     steps = []
     err_v_time = []
     linear_manip = []
     angular_manip = []
 
-    # T_se_i = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0.5], [0, 0, 0, 1]])
-    T_se_i = np.array([[-1, 0, 0.002, 0.335], [0, 1, 0, 0], [-0.002, 0, -1, 0.183], [0, 0, 0, 1]])
     T_ce_grasp = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.25], [0, 0, 0, 1]])
     T_ce_standoff = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, -0.15], [0, 0, 0, 1]])
     
-    # Original Task Config
-    T_sc_i = np.array([[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0.25], [0, 0, 0, 1]])
-    T_sc_f = np.array([[0, 1, 0, 0], [-1, 0, 0, -1], [0, 0, 1, .25], [0, 0, 0, 1]])
+    scenario = Scenario.BEST
 
-    # New Task Config
-    # T_sc_i = np.array([[1, 0, 0, 1.5], [0, 1, 0, 0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
-    # T_sc_f = np.array([[1, 0, 0, 1.5], [0, 1, 0, -0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+    # Set up configurations
+    match scenario:
+        case Scenario.BEST | Scenario.OVERSHOOT_1 | Scenario.NEW_TASK:
+            PINV_THRESHOLD = 1e-3
+            T_se_i = np.array([[-1, 0, 0.002, 0.335], [0, 1, 0, 0], [-0.002, 0, -1, 0.183], [0, 0, 0, 1]])
 
-    # Best:
-    K_p = np.eye(6) * [1, 0.15, 1, 0.15, 1, 1]
-    K_i = np.eye(6) * 50
+            # Original Task Config
+            T_sc_i = np.array([[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+            T_sc_f = np.array([[0, 1, 0, 0], [-1, 0, 0, -1], [0, 0, 1, .25], [0, 0, 0, 1]])
 
-    # Overshoot (Result 1):
-    # K_p = np.eye(6) * [1, 0.15, 1, 0.85, 1, 1]
-    # K_i = np.eye(6) * 50
+            # starting position
+            curr_state = np.array([0, 0, 0, 0, 0, -np.pi/4, -np.pi/4, 0, 0, 0, 0, 0, 0])
+        case Scenario.OVERSHOOT_2:
+            PINV_THRESHOLD = 1e-2
+            T_se_i = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0.5], [0, 0, 0, 1]])
+            
+            # New Task Config
+            T_sc_i = np.array([[1, 0, 0, 1.5], [0, 1, 0, 0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
+            T_sc_f = np.array([[1, 0, 0, 1.5], [0, 1, 0, -0.5], [0, 0, 1, 0.25], [0, 0, 0, 1]])
 
-    # Overshoot (Result 2):
-    # K_p = np.eye(6) * [1, 0.15, 1, 5, 1, 0.25]
-    # K_i = np.eye(6) * 50
+            # starting position
+            curr_state = np.array([0, 0, 0, 0, 0, -np.pi/2, -np.pi/2, 0, 0, 0, 0, 0, 0])
 
-    # New Task:
-    # K_p = np.eye(6) * [1, 0.35, 1, 0.25, 1, 0.5]
-    # K_i = np.zeros((6,6))
+    # establish gains
+    match scenario:
+        case Scenario.BEST:
+            # Best:
+            K_p = np.eye(6) * [1, 0.15, 1, 0.15, 1, 1]
+            K_i = np.eye(6) * 50
+        
+        case Scenario.OVERSHOOT_1:
+            # Overshoot (Result 1):
+            K_p = np.eye(6) * [1, 0.15, 1, 0.85, 1, 1]
+            K_i = np.eye(6) * 50
+
+        case Scenario.OVERSHOOT_2:
+            # Overshoot (Result 2):
+            K_p = np.eye(6) * [1, 0.15, 1, 5, 1, 0.25]
+            K_i = np.eye(6) * 50
+        
+        case Scenario.NEW_TASK:
+            # New Task:
+            K_p = np.eye(6) * [1, 0.35, 1, 0.25, 1, 0.5]
+            K_i = np.zeros((6,6))
 
     k = 1 # number of steps per 0.01 seconds
     Tf = 2 # trajectory runtime (s)
@@ -279,7 +311,6 @@ def FullProgram() -> None:
     max_speed = 5 # m/s
 
     trajectory = TrajectoryGenerator(T_se_i, T_sc_i, T_sc_f, T_ce_grasp, T_ce_standoff, k, Tf, write_debug=True)
-    curr_state = np.array([0, 0, 0, 0, 0, -np.pi/4, -np.pi/4, 0, 0, 0, 0, 0, 0])
 
     # list to store all determined singularities for debugging purposes
     singularities = []
